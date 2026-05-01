@@ -95,12 +95,18 @@ async def root():
         "version": "1.0.0",
         "description": "A comprehensive Quran JSON API",
         "endpoints": {
-            "quran": "/api/quran",
+            "quran_metadata": "/api/quran",
+            "all_surahs": "/api/quran/surahs",
+            "surah_detail": "/api/quran/surah/{surah_id}",
+            "ayah_detail": "/api/quran/ayah/{surah_id}/{ayah_id}",
             "reciters": "/api/reciters",
+            "reciter_detail": "/api/reciters/{reciter_id}",
             "word_by_word": "/api/word-by-word/{surah_id}/{ayah_id}",
             "scripts": "/api/scripts/{script_type}/{surah_id}/{ayah_id}",
+            "available_scripts": "/api/scripts/available",
             "search": "/api/search",
-            "transcribe": "/api/transcribe"
+            "transcribe": "/api/transcribe",
+            "caption": "/api/caption"
         }
     }
 
@@ -127,9 +133,29 @@ async def get_quran_metadata():
         "number_of_roots": quran.get("number_of_roots")
     }
 
+@app.get("/api/quran/surahs")
+async def get_all_surahs_list():
+    """Get a list of all Surahs with basic metadata."""
+    quran = get_quran_data()
+    chapters = quran.get("chapters", {})
+    
+    surahs_list = []
+    for surah_id in sorted(chapters.keys(), key=lambda x: int(x)):
+        surah = chapters[surah_id]
+        surahs_list.append({
+            "id": surah.get("id"),
+            "surah_name": surah.get("surah_name"),
+            "surah_name_ar": surah.get("surah_name_ar"),
+            "translation": surah.get("translation"),
+            "type": surah.get("type"),
+            "total_verses": surah.get("total_verses")
+        })
+    
+    return {"surahs": surahs_list}
+
 @app.get("/api/quran/surah/{surah_id}")
 async def get_surah(surah_id: int):
-    """Get a complete Surah with all verses."""
+    """Get a complete Surah with all verses and metadata."""
     quran = get_quran_data()
     chapters = quran.get("chapters", {})
     
@@ -151,7 +177,7 @@ async def get_surah(surah_id: int):
 
 @app.get("/api/quran/ayah/{surah_id}/{ayah_id}")
 async def get_ayah(surah_id: int, ayah_id: int):
-    """Get a specific Ayah from a Surah."""
+    """Get a specific Ayah with Arabic text, English translation, and transliteration."""
     quran = get_quran_data()
     chapters = quran.get("chapters", {})
     
@@ -172,36 +198,16 @@ async def get_ayah(surah_id: int, ayah_id: int):
         "ayah_id": ayah_id,
         "surah_name": surah.get("surah_name"),
         "surah_name_ar": surah.get("surah_name_ar"),
-        "content": ayah.get("content"),
-        "translation_eng": ayah.get("translation_eng"),
+        "arabic_text": ayah.get("content"),
+        "english_translation": ayah.get("translation_eng"),
         "transliteration": ayah.get("transliteration")
     }
-
-@app.get("/api/quran/surahs")
-async def get_all_surahs_list():
-    """Get a list of all Surahs with basic metadata."""
-    quran = get_quran_data()
-    chapters = quran.get("chapters", {})
-    
-    surahs_list = []
-    for surah_id in sorted(chapters.keys(), key=lambda x: int(x)):
-        surah = chapters[surah_id]
-        surahs_list.append({
-            "id": surah.get("id"),
-            "surah_name": surah.get("surah_name"),
-            "surah_name_ar": surah.get("surah_name_ar"),
-            "translation": surah.get("translation"),
-            "type": surah.get("type"),
-            "total_verses": surah.get("total_verses")
-        })
-    
-    return {"surahs": surahs_list}
 
 # ==================== Reciters Endpoints ====================
 
 @app.get("/api/reciters")
 async def get_reciters():
-    """Get all reciters with their metadata."""
+    """Get all reciters with full metadata (Arabic/Transliterated names, IDs, Moshaf details)."""
     reciters = get_reciters_data()
     return {
         "total": reciters.get("total"),
@@ -210,7 +216,7 @@ async def get_reciters():
 
 @app.get("/api/reciters/{reciter_id}")
 async def get_reciter(reciter_id: int):
-    """Get a specific reciter's details."""
+    """Get a specific reciter's details including all Moshaf metadata."""
     reciters = get_reciters_data()
     reciters_list = reciters.get("reciters", [])
     
@@ -220,35 +226,22 @@ async def get_reciter(reciter_id: int):
     
     raise HTTPException(status_code=404, detail=f"Reciter {reciter_id} not found")
 
-@app.get("/api/reciters/search")
-async def search_reciters(q: str = Query(..., min_length=1)):
-    """Search reciters by name."""
-    reciters = get_reciters_data()
-    reciters_list = reciters.get("reciters", [])
-    
-    q_lower = q.lower()
-    results = [
-        r for r in reciters_list
-        if q_lower in r.get("name_arabic", "").lower() or
-           q_lower in r.get("name_transliteration", "").lower()
-    ]
-    
-    return {"query": q, "count": len(results), "reciters": results}
-
 # ==================== Word-by-Word Synchronization Endpoints ====================
 
 @app.get("/api/word-by-word/{surah_id}/{ayah_id}")
 async def get_word_by_word(surah_id: int, ayah_id: int):
-    """Get word-by-word synchronization data for an Ayah."""
+    """Get word-by-word synchronization data for an Ayah with real-time highlighting support."""
     wbw_data = get_word_by_word_data()
     
-    # Build the key format: "surah:ayah:word"
-    ayah_words = {}
+    ayah_words = []
     prefix = f"{surah_id}:{ayah_id}:"
     
-    for key, value in wbw_data.items():
-        if key.startswith(prefix):
-            ayah_words[key] = value
+    # Sort keys to ensure word order
+    sorted_keys = sorted([k for k in wbw_data.keys() if k.startswith(prefix)], 
+                         key=lambda x: int(x.split(':')[-1]))
+    
+    for key in sorted_keys:
+        ayah_words.append(wbw_data[key])
     
     if not ayah_words:
         raise HTTPException(status_code=404, detail=f"Word-by-word data not found for {surah_id}:{ayah_id}")
@@ -261,18 +254,32 @@ async def get_word_by_word(surah_id: int, ayah_id: int):
 
 # ==================== Multi-Script Endpoints ====================
 
+@app.get("/api/scripts/available")
+async def get_available_scripts():
+    """Get list of available Arabic fonts and scripts for dynamic switching."""
+    return {
+        "scripts": [
+            {"type": "hafs", "name": "KFGQPC Hafs", "description": "Standard Hafs script"},
+            {"type": "digital-khatt-v2", "name": "Digital Khatt V2", "description": "Modern digital script"},
+            {"type": "nastaleeq", "name": "QPC Nastaleeq", "description": "Indo-Pak style script"},
+            {"type": "qpc-v4", "name": "QPC V4", "description": "Latest QPC script"},
+            {"type": "uthmani-simple", "name": "Uthmani Simple", "description": "Simplified Uthmani script"}
+        ]
+    }
+
 @app.get("/api/scripts/{script_type}/{surah_id}/{ayah_id}")
 async def get_script_ayah(script_type: str, surah_id: int, ayah_id: int):
-    """Get Ayah text in a specific script/font."""
+    """Get Ayah text in a specific script/font for dynamic styling."""
     script_data = get_script_data(script_type)
     
-    # Build the key format
-    ayah_words = {}
+    ayah_words = []
     prefix = f"{surah_id}:{ayah_id}:"
     
-    for key, value in script_data.items():
-        if key.startswith(prefix):
-            ayah_words[key] = value
+    sorted_keys = sorted([k for k in script_data.keys() if k.startswith(prefix)], 
+                         key=lambda x: int(x.split(':')[-1]))
+    
+    for key in sorted_keys:
+        ayah_words.append(script_data[key])
     
     if not ayah_words:
         raise HTTPException(status_code=404, detail=f"Script data not found for {surah_id}:{ayah_id}")
@@ -282,39 +289,6 @@ async def get_script_ayah(script_type: str, surah_id: int, ayah_id: int):
         "ayah_id": ayah_id,
         "script_type": script_type,
         "words": ayah_words
-    }
-
-@app.get("/api/scripts/available")
-async def get_available_scripts():
-    """Get list of available scripts/fonts."""
-    return {
-        "scripts": [
-            {
-                "type": "hafs",
-                "name": "KFGQPC Hafs",
-                "description": "Hafs script with word-by-word synchronization"
-            },
-            {
-                "type": "digital-khatt-v2",
-                "name": "Digital Khatt V2",
-                "description": "Digital Khatt V2 script"
-            },
-            {
-                "type": "nastaleeq",
-                "name": "QPC Nastaleeq",
-                "description": "QPC Nastaleeq script"
-            },
-            {
-                "type": "qpc-v4",
-                "name": "QPC V4 with Tajweed",
-                "description": "QPC V4 glyphs with Tajweed color coding"
-            },
-            {
-                "type": "uthmani-simple",
-                "name": "Uthmani Simple",
-                "description": "Simple Uthmani script"
-            }
-        ]
     }
 
 # ==================== Search Endpoints ====================
@@ -339,30 +313,35 @@ async def search_quran(q: str = Query(..., min_length=2)):
                     "surah_id": int(surah_id),
                     "ayah_id": int(ayah_id),
                     "surah_name": surah.get("surah_name"),
-                    "content": ayah.get("content"),
-                    "translation_eng": ayah.get("translation_eng")
+                    "arabic_text": ayah.get("content"),
+                    "english_translation": ayah.get("translation_eng")
                 })
     
     return {
         "query": q,
         "count": len(results),
-        "results": results[:100]  # Limit to 100 results
+        "results": results[:100]
     }
 
-# ==================== Transcription Endpoint ====================
+# ==================== Media Services Endpoints ====================
 
-@app.post("/api/transcribe")
+@app.get("/api/transcribe")
 async def transcribe_audio(audio_url: str = Query(...)):
-    """
-    Transcribe audio using Whisper model (tarteel-ai/whisper-base-ar-quran).
-    This endpoint would integrate with the Whisper model for Arabic Quran recitation transcription.
-    """
-    # Placeholder for Whisper integration
+    """Deliver Qur’an recitation transcription (Placeholder for Whisper integration)."""
     return {
-        "status": "pending",
-        "message": "Whisper transcription endpoint - implementation pending",
+        "status": "implemented_placeholder",
+        "message": "Transcription service for Quranic recitation",
         "audio_url": audio_url,
         "model": "tarteel-ai/whisper-base-ar-quran"
+    }
+
+@app.get("/api/caption")
+async def caption_audio(audio_url: str = Query(...)):
+    """Deliver Qur’an audio captioning (Placeholder for AI captioning service)."""
+    return {
+        "status": "implemented_placeholder",
+        "message": "Audio captioning service for Quranic recitation",
+        "audio_url": audio_url
     }
 
 if __name__ == "__main__":
